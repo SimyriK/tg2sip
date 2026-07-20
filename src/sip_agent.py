@@ -113,6 +113,41 @@ class IncomingCall:
     remote_uri: str
     caller_id: str       # user part of the From URI (who's calling)
     destination: str     # user part of the To URI (the dialed number/target)
+    # Optional Door2TG / per-call video overrides from SIP INVITE headers.
+    door_id: str = ""
+    video_url: str = ""
+    video_user: str = ""
+    video_pass: str = ""
+    video_args: str = ""
+    video_transport: str = ""
+
+
+_HEADER_MAP = {
+    "x-door2tg-door-id": "door_id",
+    "x-door2tg-video-url": "video_url",
+    "x-door2tg-video-user": "video_user",
+    "x-door2tg-video-pass": "video_pass",
+    "x-door2tg-video-args": "video_args",
+    "x-door2tg-video-transport": "video_transport",
+}
+
+
+def parse_sip_headers(whole_msg: str) -> dict[str, str]:
+    """Extract Door2TG header values from a raw SIP message body."""
+    found: dict[str, str] = {}
+    if not whole_msg:
+        return found
+    # Headers end at the first blank line.
+    header_block = whole_msg.split("\r\n\r\n", 1)[0]
+    for line in header_block.split("\r\n"):
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        key = name.strip().lower()
+        field = _HEADER_MAP.get(key)
+        if field:
+            found[field] = value.strip()
+    return found
 
 
 class _Endpoint(pj.Endpoint):
@@ -130,16 +165,25 @@ class _Account(pj.Account):
     def onIncomingCall(self, prm: pj.OnIncomingCallParam) -> None:  # noqa: N802
         call = SipCall(self, prm.callId)
         info = call.getInfo()
+        headers = {}
+        try:
+            whole = getattr(getattr(prm, "rdata", None), "wholeMsg", "") or ""
+            headers = parse_sip_headers(whole)
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not parse SIP headers: %s", e)
         ic = IncomingCall(
             call_id=prm.callId,
             remote_uri=info.remoteUri,
             caller_id=_extract_user(info.remoteUri),
             destination=_extract_user(info.localUri),
+            **headers,
         )
         # localUri/remoteUri logged so you can see exactly what the INVITE carries
         # (the dialed number for dynamic routing comes from the To/local URI).
-        log.info("incoming sip call: from=%s to=%s (localUri=%r remoteUri=%r)",
-                 ic.caller_id, ic.destination, info.localUri, info.remoteUri)
+        log.info("incoming sip call: from=%s to=%s door=%r video=%s (localUri=%r remoteUri=%r)",
+                 ic.caller_id, ic.destination, ic.door_id or "-",
+                 "yes" if ic.video_url else "no",
+                 info.localUri, info.remoteUri)
         self._on_incoming(ic, call)
 
 

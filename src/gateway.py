@@ -123,7 +123,7 @@ class Gateway:
             except pj.Error as e:
                 log.warning("could not send 180 ringing: %s", e)
 
-        await self._spawn_tg_call(ic.caller_id, ic.destination)
+        await self._spawn_tg_call(ic.caller_id, ic.destination, ic)
 
     def _pick_target(self, destination: str):
         """Choose the TG call target from the dialed SIP destination, else the
@@ -135,7 +135,36 @@ class Gateway:
             return int(d) if d.isdigit() else d
         return self._cfg.telegram.forward_user_id or None
 
-    async def _spawn_tg_call(self, caller_id: str, destination: str = "") -> None:
+    def _video_for_call(self, ic: IncomingCall | None):
+        """Per-call VideoConfig from Door2TG SIP headers, else global config."""
+        from .config import VideoConfig
+
+        base = self._cfg.video
+        if not ic or not ic.video_url:
+            return base
+        input_args = ic.video_args or base.input_args
+        if ic.video_transport and "-rtsp_transport" not in input_args:
+            transport_arg = f"-rtsp_transport {ic.video_transport}"
+            input_args = f"{transport_arg} {input_args}".strip()
+        return VideoConfig(
+            enabled=True,
+            source_url=ic.video_url,
+            source_cmd="",
+            source_user=ic.video_user or base.source_user,
+            source_pass=ic.video_pass or base.source_pass,
+            input_args=input_args,
+            width=base.width,
+            height=base.height,
+            fps=base.fps,
+            h264=base.h264,
+        )
+
+    async def _spawn_tg_call(
+        self,
+        caller_id: str,
+        destination: str = "",
+        ic: IncomingCall | None = None,
+    ) -> None:
         target = self._pick_target(destination)
         if not target:
             log.warning("no TG target for call (dest=%r, no fallback); rejecting", destination)
@@ -153,13 +182,17 @@ class Gateway:
         if self._cfg.behaviour.caller_id_in_tg_message:
             await self._tg_sig.send_text(uid, f"📞 Incoming call from {caller_id}")
 
+        video_cfg = self._video_for_call(ic)
+        if ic and ic.video_url:
+            log.info("per-call video override door=%r url set", ic.door_id or "-")
+
         try:
             # 1. NTgCalls owns the call + DH; create it before requesting.
             self._playback = JitterBuffer(_playback_cap_bytes(self._cfg.bridge))
             self._tg_media = TelegramMedia(
                 self._playback, self._loop,
                 sample_rate=self._cfg.bridge.tg_sample_rate,
-                video=self._cfg.video,
+                video=video_cfg,
             )
             self._tg_media.set_state_callback(self._on_tg_conn_state_threadsafe)
             self._tg_media.set_signaling_sender(self._tg_sig.send_signaling_out)
