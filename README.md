@@ -155,6 +155,20 @@ VIDEO_SOURCE_PASS=secret
 
 Credentials are URL-encoded into the stream URL for ffmpeg (Basic/Digest) and redacted from logs. Encode resolution/fps come from the `video:` block in `config/config.yaml` (defaults 640×480 @ 15 fps). The gateway runs `ffmpeg` itself (a static build with RTSP, baked into the image) to decode the source to raw `yuv420p`, then pushes frames into ntgcalls as **EXTERNAL** camera frames (paced, strictly-increasing timestamps). For RTSP cameras add `VIDEO_INPUT_ARGS=-rtsp_transport tcp`. Leave `VIDEO_SOURCE_URL` blank for audio-only calls.
 
+### Per-call video (Door2TG SIP headers)
+
+Inbound INVITEs may override the video source for that call only:
+
+| Header | Meaning |
+|--------|---------|
+| `X-Door2TG-Door-Id` | Door id (logging) |
+| `X-Door2TG-Video-URL` | ffmpeg input URL |
+| `X-Door2TG-Video-User` / `X-Door2TG-Video-Pass` | optional basic-auth |
+| `X-Door2TG-Video-Args` | extra ffmpeg input args |
+| `X-Door2TG-Video-Transport` | e.g. `tcp` → `-rtsp_transport tcp` |
+
+If `X-Door2TG-Video-URL` is absent, the gateway falls back to `VIDEO_SOURCE_URL` / `VIDEO_SOURCE_CMD` from the environment.
+
 Notes:
 - **One-way out.** Incoming video *from* the Telegram user is ignored (there's no SIP video leg).
 - **Codec/CPU.** Video is encoded with **VP8 in software** (H264 is stripped from the build — see Status). That's CPU-heavy; on an old CPU keep the resolution/fps modest (e.g. 320×240–640×480) and bump only as far as stays smooth.
