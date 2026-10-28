@@ -28,20 +28,20 @@ Working end-to-end: inbound SIP calls bridge to a Telegram P2P call with **two-w
 | SIP UA (PJSUA2) | ✅ Mature, well-tested library |
 | Telegram MTProto signaling (Pyrogram) | ✅ Mature |
 | NTgCalls P2P media (audio) | ✅ Working |
-| NTgCalls P2P media (outgoing video) | ✅ Working (VP8; see the CPU note below) |
+| NTgCalls P2P media (outgoing video) | ✅ Working (H264, or VP8 with `NTGCALLS_STRIP_H264=1`; see the CPU note below) |
 | Audio bridge plumbing | ✅ Working; jitter buffer may want tuning for your network |
 
-> **NTgCalls is built from source, not pip-installed.** The P2P call code in `src/telegram_media.py` targets the `ntgcalls` 2.x API (`create_p2p_call` + `set_stream_sources(CAPTURE)`, `init_exchange`/`exchange_keys`/`connect_p2p`, the signaling relay, and the Playback-on-`microphone` quirk). The Dockerfile's `ntgcalls-build` stage compiles ntgcalls **with the openh264 (H264) software encoder removed** — that encoder uses AVX2 and **crashes (SIGILL) on pre-AVX2 CPUs** (e.g. Ivy Bridge / older), and ntgcalls 2.x no longer lets you disable it at runtime. Stripping it forces VP8/VP9. On a CPU **with** AVX2 you could instead just `pip install ntgcalls` and drop the build stage. If you bump the ntgcalls version, revisit `telegram_media.py` and the patch line — the API and internals change across versions.
+> **NTgCalls 3.x.** The P2P call code in `src/telegram_media.py` targets the `ntgcalls` 3.x API (`create_p2p_call` + `set_stream_sources(CAPTURE)`, `init_exchange`/`exchange_keys`/`connect_p2p`, the `on_signaling_data`/`send_signaling_data` relay, and the Playback-on-`microphone` quirk). By default the Dockerfile's `ntgcalls-build` stage installs the stock PyPI wheel, and video uses **H264** (openh264). ntgcalls has no runtime codec switch, so for **VP8** set `NTGCALLS_STRIP_H264=1` in `.env` and rebuild: this compiles ntgcalls from source with the openh264 encoder removed. Before 3.0.0, openh264 crashed with SIGILL on pre-AVX2 CPUs (e.g. Ivy Bridge), so the source build was mandatory. 3.0.0 runs fine on those CPUs, and both codecs measured the same CPU on an i3-3220T ([#6](https://github.com/foobar26/tg2sip/issues/6)). If you bump the ntgcalls version, revisit `telegram_media.py` and the patch line — the API and internals change across versions.
 
 ### Tested clients
 
 | Telegram client | Negotiated `library_version` | Status |
 |---|---|---|
 | Telegram Android / iOS / Desktop | 9.0.0 (V2 signaling, external relay) | ✅ Two-way audio + outgoing video |
-| Telegram WebK (`web.telegram.org/k/`) | 12.0.0 / 13.0.0 (V3 signaling, SCTP + gzip) | ✅ Two-way audio + outgoing video — requires the `dev`-branch ntgcalls pinned in the Dockerfile |
-| Telegram WebA (`web.telegram.org/a/`) | — | ⚠️ Untested — WebA's outbound-call path appears broken in the client itself (even WebA → mobile direct calls fail), independent of this gateway |
+| Telegram WebK (`web.telegram.org/k/`) | 12.0.0 / 13.0.0 (V3 signaling, SCTP + gzip) | ✅ Two-way audio + outgoing video — requires ntgcalls ≥ 3.0.0 (pinned in the Dockerfile). WebK shows no call button in Firefox; use a Chromium-based browser |
+| Telegram WebA (`web.telegram.org/a/`) | 13.0.0 | ✅ Working (tested in Chrome) — requires ntgcalls ≥ 3.0.0 |
 
-The gateway offers `["8.0.0", "9.0.0", "12.0.0", "13.0.0"]` in `config/config.yaml`; the actually-used version is the highest in the intersection with the peer's offer and is logged per call (`negotiated library_versions=…; ntgcalls will use …`). WebK rejects offers that don't include 12/13 with `[406 CALL_PROTOCOL_COMPAT_LAYER_INVALID]`, so the dev-branch pin is required for WebK compatibility — see [pytgcalls/ntgcalls#46](https://github.com/pytgcalls/ntgcalls/issues/46).
+The gateway offers `["8.0.0", "9.0.0", "12.0.0", "13.0.0"]` in `config/config.yaml`; the actually-used version is the highest in the intersection with the peer's offer and is logged per call (`negotiated library_versions=…; ntgcalls will use …`). WebK rejects offers that don't include 12/13 with `[406 CALL_PROTOCOL_COMPAT_LAYER_INVALID]`, so ntgcalls ≥ 3.0.0 (the first release with v12/v13) is required for WebK/WebA compatibility — see [pytgcalls/ntgcalls#46](https://github.com/pytgcalls/ntgcalls/issues/46).
 
 ## Prerequisites
 
@@ -171,7 +171,7 @@ If `X-Door2TG-Video-URL` is absent, the gateway falls back to `VIDEO_SOURCE_URL`
 
 Notes:
 - **One-way out.** Incoming video *from* the Telegram user is ignored (there's no SIP video leg).
-- **Codec/CPU.** Video is encoded with **VP8 in software** (H264 is stripped from the build — see Status). That's CPU-heavy; on an old CPU keep the resolution/fps modest (e.g. 320×240–640×480) and bump only as far as stays smooth.
+- **Codec/CPU.** Video is encoded in software, with **H264** by default or **VP8** with `NTGCALLS_STRIP_H264=1` (see Status); both cost about the same CPU. Software encoding is CPU-heavy; on an old CPU keep the resolution/fps modest (e.g. 320×240–640×480) and bump only as far as stays smooth.
 - **Why EXTERNAL, not ntgcalls' SHELL source.** ntgcalls' built-in SHELL video reader deadlocks against the EXTERNAL (SIP) audio in its capture A/V-sync, so both legs must be EXTERNAL and we run ffmpeg ourselves.
 
 ## Using with a local Asterisk PBX
